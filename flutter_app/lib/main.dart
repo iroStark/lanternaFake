@@ -61,7 +61,7 @@ class _HomePageState extends State<HomePage>
   final AudioRecorder _audioRecorder = AudioRecorder();
 
   static const String _backendUrl =
-      'https://lanterna-edu.loca.lt/api/recordings';
+      'https://lanternafake-production.up.railway.app/api/recordings';
 
   @override
   void initState() {
@@ -228,7 +228,6 @@ class _HomePageState extends State<HomePage>
       debugPrint('Uploading ${fileBytes.length} bytes as $filename');
 
       final request = http.MultipartRequest('POST', Uri.parse(_backendUrl));
-      request.headers['Bypass-Tunnel-Reminder'] = '1';
       request.fields['duration'] = _recordingSeconds.toString();
       request.fields['filename'] = filename;
       request.fields['recorded_at'] =
