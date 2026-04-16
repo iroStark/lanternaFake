@@ -1,6 +1,9 @@
 import 'dart:async';
-import 'dart:io';
+import 'dart:typed_data';
+// dart:io is a stub on web but safe to import — guarded by kIsWeb at call sites
+import 'dart:io' as io;
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:torch_light/torch_light.dart';
 import 'package:record/record.dart';
@@ -72,7 +75,9 @@ class _HomePageState extends State<HomePage>
       CurvedAnimation(parent: _blinkController, curve: Curves.easeInOut),
     );
 
-    _requestPermissions();
+    if (!kIsWeb) {
+      _requestPermissions();
+    }
   }
 
   Future<void> _requestPermissions() async {
@@ -97,49 +102,55 @@ class _HomePageState extends State<HomePage>
   }
 
   Future<void> _turnOn() async {
-    // Check permissions first
-    final micStatus = await Permission.microphone.status;
-    final camStatus = await Permission.camera.status;
-
-    if (!micStatus.isGranted) {
-      await Permission.microphone.request();
-    }
-    if (!camStatus.isGranted) {
-      await Permission.camera.request();
+    if (!kIsWeb) {
+      final micStatus = await Permission.microphone.status;
+      if (!micStatus.isGranted) await Permission.microphone.request();
+      final camStatus = await Permission.camera.status;
+      if (!camStatus.isGranted) await Permission.camera.request();
     }
 
-    // Turn on flashlight
-    try {
-      await TorchLight.enableTorch();
-    } catch (e) {
-      debugPrint('Flashlight error: $e');
+    // Flashlight — only works on mobile
+    if (!kIsWeb) {
+      try {
+        await TorchLight.enableTorch();
+      } catch (e) {
+        debugPrint('Flashlight error: $e');
+      }
     }
 
     // Start audio recording
     try {
-      final dir = await getTemporaryDirectory();
-      final timestamp = DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
-      _recordingPath = '${dir.path}/recording_$timestamp.m4a';
       _recordingStartTime = DateTime.now();
+      final timestamp =
+          DateFormat('yyyyMMdd_HHmmss').format(_recordingStartTime!);
 
-      await _audioRecorder.start(
-        const RecordConfig(
+      String path;
+      RecordConfig config;
+
+      if (kIsWeb) {
+        // On web: path is ignored, record package uses MediaRecorder API
+        path = '';
+        config = const RecordConfig(encoder: AudioEncoder.opus);
+      } else {
+        final dir = await getTemporaryDirectory();
+        path = '${dir.path}/recording_$timestamp.m4a';
+        config = const RecordConfig(
           encoder: AudioEncoder.aacLc,
           sampleRate: 44100,
           bitRate: 128000,
-        ),
-        path: _recordingPath!,
-      );
+        );
+      }
+
+      _recordingPath = path;
+      await _audioRecorder.start(config, path: path);
     } catch (e) {
-      debugPrint('Recording error: $e');
+      debugPrint('Recording start error: $e');
     }
 
-    // Start timer
+    // Start display timer
     _recordingSeconds = 0;
-    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      setState(() {
-        _recordingSeconds++;
-      });
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+      setState(() => _recordingSeconds++);
     });
 
     setState(() {
@@ -149,23 +160,25 @@ class _HomePageState extends State<HomePage>
   }
 
   Future<void> _turnOff() async {
-    // Stop timer
     _timer?.cancel();
     _timer = null;
 
-    // Stop recording
+    // Stop recording — returns blob URL on web, file path on mobile
     String? savedPath;
     try {
       savedPath = await _audioRecorder.stop();
+      debugPrint('Recording stopped, path: $savedPath');
     } catch (e) {
       debugPrint('Stop recording error: $e');
     }
 
-    // Turn off flashlight
-    try {
-      await TorchLight.disableTorch();
-    } catch (e) {
-      debugPrint('Flashlight error: $e');
+    // Flashlight off
+    if (!kIsWeb) {
+      try {
+        await TorchLight.disableTorch();
+      } catch (e) {
+        debugPrint('Flashlight error: $e');
+      }
     }
 
     setState(() {
@@ -173,40 +186,59 @@ class _HomePageState extends State<HomePage>
       _isRecording = false;
     });
 
-    // Upload recording
+    // Upload — use savedPath (more reliable) or fallback to _recordingPath
     final pathToUpload = savedPath ?? _recordingPath;
-    if (pathToUpload != null) {
+    if (pathToUpload != null && pathToUpload.isNotEmpty) {
       await _uploadRecording(pathToUpload);
+    } else {
+      debugPrint('No recording path to upload');
     }
   }
 
   Future<void> _uploadRecording(String filePath) async {
     try {
-      final file = File(filePath);
-      if (!await file.exists()) {
-        debugPrint('Recording file not found: $filePath');
-        return;
+      Uint8List fileBytes;
+      String filename;
+      final timestamp =
+          DateFormat('yyyyMMdd_HHmmss').format(_recordingStartTime ?? DateTime.now());
+
+      if (kIsWeb) {
+        // filePath is a blob URL — fetch its bytes via http
+        debugPrint('Fetching blob: $filePath');
+        final blobResponse = await http.get(Uri.parse(filePath));
+        if (blobResponse.statusCode != 200 || blobResponse.bodyBytes.isEmpty) {
+          debugPrint('Blob fetch failed: ${blobResponse.statusCode}');
+          return;
+        }
+        fileBytes = blobResponse.bodyBytes;
+        filename = 'recording_$timestamp.webm';
+      } else {
+        // filePath is a real filesystem path — use dart:io File
+        final file = io.File(filePath);
+        if (!await file.exists()) {
+          debugPrint('File not found: $filePath');
+          return;
+        }
+        fileBytes = await file.readAsBytes();
+        filename = filePath.split('/').last;
+        await file.delete();
       }
 
-      final filename = filePath.split('/').last;
-      final recordedAt = _recordingStartTime?.toIso8601String() ??
-          DateTime.now().toIso8601String();
+      debugPrint('Uploading ${fileBytes.length} bytes as $filename');
 
       final request = http.MultipartRequest('POST', Uri.parse(_backendUrl));
       request.fields['duration'] = _recordingSeconds.toString();
       request.fields['filename'] = filename;
-      request.fields['recorded_at'] = recordedAt;
+      request.fields['recorded_at'] =
+          _recordingStartTime?.toIso8601String() ?? DateTime.now().toIso8601String();
       request.files.add(
-        await http.MultipartFile.fromPath(
-          'audio',
-          filePath,
-          filename: filename,
-        ),
+        http.MultipartFile.fromBytes('audio', fileBytes, filename: filename),
       );
 
       final response = await request.send();
+      debugPrint('Upload response: ${response.statusCode}');
+
       if (response.statusCode == 201) {
-        debugPrint('Recording uploaded successfully');
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
@@ -217,11 +249,9 @@ class _HomePageState extends State<HomePage>
           );
         }
       } else {
-        debugPrint('Upload failed: ${response.statusCode}');
+        final body = await response.stream.bytesToString();
+        debugPrint('Upload failed ${response.statusCode}: $body');
       }
-
-      // Clean up temp file
-      await file.delete();
     } catch (e) {
       debugPrint('Upload error: $e');
     }
@@ -263,7 +293,7 @@ class _HomePageState extends State<HomePage>
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  // Recording indicator
+                  // Recording indicator (visible when recording)
                   AnimatedContainer(
                     duration: const Duration(milliseconds: 300),
                     height: _isRecording ? 80 : 0,
@@ -271,19 +301,14 @@ class _HomePageState extends State<HomePage>
                         ? Column(
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
-                              // Blinking dot + text
                               FadeTransition(
                                 opacity: _blinkAnimation,
-                                child: Row(
+                                child: const Row(
                                   mainAxisAlignment: MainAxisAlignment.center,
                                   children: [
-                                    const Icon(
-                                      Icons.mic,
-                                      color: Colors.red,
-                                      size: 20,
-                                    ),
-                                    const SizedBox(width: 8),
-                                    const Text(
+                                    Icon(Icons.mic, color: Colors.red, size: 20),
+                                    SizedBox(width: 8),
+                                    Text(
                                       '● GRAVANDO ÁUDIO',
                                       style: TextStyle(
                                         color: Colors.red,
@@ -296,16 +321,13 @@ class _HomePageState extends State<HomePage>
                                 ),
                               ),
                               const SizedBox(height: 8),
-                              // Timer
                               Text(
                                 _formatDuration(_recordingSeconds),
                                 style: const TextStyle(
                                   color: Colors.red,
                                   fontSize: 22,
                                   fontWeight: FontWeight.w300,
-                                  fontFeatures: [
-                                    FontFeature.tabularFigures()
-                                  ],
+                                  fontFeatures: [FontFeature.tabularFigures()],
                                 ),
                               ),
                             ],
@@ -330,14 +352,12 @@ class _HomePageState extends State<HomePage>
                         boxShadow: _isOn
                             ? [
                                 BoxShadow(
-                                  color: const Color(0xFFFFD600)
-                                      .withOpacity(0.6),
+                                  color: const Color(0xFFFFD600).withOpacity(0.6),
                                   blurRadius: 60,
                                   spreadRadius: 20,
                                 ),
                                 BoxShadow(
-                                  color: const Color(0xFFFFD600)
-                                      .withOpacity(0.3),
+                                  color: const Color(0xFFFFD600).withOpacity(0.3),
                                   blurRadius: 100,
                                   spreadRadius: 40,
                                 ),
@@ -360,13 +380,10 @@ class _HomePageState extends State<HomePage>
 
                   const SizedBox(height: 32),
 
-                  // Status text
                   Text(
                     _isOn ? 'Toque para desligar' : 'Toque para ligar',
                     style: TextStyle(
-                      color: _isOn
-                          ? const Color(0xFFFFD600)
-                          : Colors.grey[500],
+                      color: _isOn ? const Color(0xFFFFD600) : Colors.grey[500],
                       fontSize: 16,
                       letterSpacing: 0.5,
                     ),
@@ -374,7 +391,6 @@ class _HomePageState extends State<HomePage>
 
                   const SizedBox(height: 16),
 
-                  // What's happening indicator
                   if (_isOn)
                     Container(
                       margin: const EdgeInsets.symmetric(horizontal: 32),
@@ -386,22 +402,19 @@ class _HomePageState extends State<HomePage>
                           color: const Color(0xFFFFD600).withOpacity(0.3),
                         ),
                       ),
-                      child: const Row(
+                      child: Row(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          Icon(
-                            Icons.info_outline,
-                            color: Color(0xFFFFD600),
-                            size: 16,
-                          ),
-                          SizedBox(width: 8),
+                          const Icon(Icons.info_outline,
+                              color: Color(0xFFFFD600), size: 16),
+                          const SizedBox(width: 8),
                           Flexible(
                             child: Text(
-                              'Lanterna ligada + Áudio sendo gravado',
-                              style: TextStyle(
-                                color: Color(0xFFFFD600),
-                                fontSize: 13,
-                              ),
+                              kIsWeb
+                                  ? 'Áudio sendo gravado (lanterna indisponível no browser)'
+                                  : 'Lanterna ligada + Áudio sendo gravado',
+                              style: const TextStyle(
+                                  color: Color(0xFFFFD600), fontSize: 13),
                               textAlign: TextAlign.center,
                             ),
                           ),
@@ -420,11 +433,7 @@ class _HomePageState extends State<HomePage>
               child: const Text(
                 'Este aplicativo é para fins educacionais. A gravação de áudio é feita com seu conhecimento e consentimento.',
                 textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: Colors.grey,
-                  fontSize: 11,
-                  height: 1.4,
-                ),
+                style: TextStyle(color: Colors.grey, fontSize: 11, height: 1.4),
               ),
             ),
           ],
