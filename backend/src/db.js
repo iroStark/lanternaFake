@@ -3,9 +3,7 @@ require('dotenv').config();
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production'
-    ? { rejectUnauthorized: false }
-    : false,
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
 });
 
 async function initDB() {
@@ -13,15 +11,20 @@ async function initDB() {
   try {
     await client.query(`
       CREATE TABLE IF NOT EXISTS recordings (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        filename TEXT NOT NULL,
+        id            UUID      PRIMARY KEY DEFAULT gen_random_uuid(),
+        filename      TEXT      NOT NULL,
         original_name TEXT,
-        duration INTEGER,
-        file_size INTEGER,
-        recorded_at TIMESTAMP,
-        uploaded_at TIMESTAMP DEFAULT NOW(),
-        device_info TEXT
+        duration      INTEGER,
+        file_size     INTEGER,
+        recorded_at   TIMESTAMP,
+        uploaded_at   TIMESTAMP DEFAULT NOW(),
+        device_info   TEXT,
+        audio_data    BYTEA
       );
+    `);
+    // Migrate existing table (adds column if upgrading from old schema)
+    await client.query(`
+      ALTER TABLE recordings ADD COLUMN IF NOT EXISTS audio_data BYTEA;
     `);
     console.log('Database initialized — table "recordings" ready.');
   } catch (err) {
